@@ -10,6 +10,8 @@ bl_info = {
     "category": "Material",
 }
 
+preview_collections = {}
+
 import bpy,bmesh,subprocess,os
 from bpy.props import FloatVectorProperty, FloatProperty,BoolProperty,StringProperty,IntProperty
 import bpy.utils.previews
@@ -78,7 +80,6 @@ class KSYNSCM_OpenAddonPreferences(bpy.types.Operator):
 
         return {'FINISHED'}
 # アイコンの辞書を作成
-preview_collections = {}
 # アイコン呼び出しクラス
 class RegisterIcons():
     @classmethod
@@ -136,12 +137,23 @@ class KsynSolidColorOBJECT_OT_RefreshIcons(bpy.types.Operator):
     bl_description = "Refresh icons from the icon directory"
     
     cmd: bpy.props.StringProperty(default='', options={'HIDDEN'}) # type: ignore 
-    
-    
-    def execute(self, context):
 
-        if self.cmd=="fol_open":
-             subprocess.run('explorer /select,{}'.format(self.cmd))
+    def string_to_tuple(self,text):
+        # 不要な文字を取り除く
+        text = text.replace('(', '').replace(')', '')
+        # カンマで分割してリストにする
+        items = text.split(',')
+        # ダブルクォーテーションを取り除き、各要素をタプルに変換する
+        tuple_result = tuple(item.strip().strip('"') for item in items)
+        return tuple_result
+
+            
+    def execute(self, context):
+        tuple_result = self.string_to_tuple(self.cmd)
+        # print("###tuple_result",type(tuple_result))
+
+        if tuple_result[0]=="fol_open":
+             subprocess.run('explorer /select,{}'.format(tuple_result[1]))
         else:
             RegisterIcons().refresh()
         return {'FINISHED'}
@@ -170,7 +182,7 @@ class KsynSolidColorCustomIconPanel(bpy.types.Panel):
 
 
     def draw_icon_panels(self, context,row,layout):
-        row.operator("object.refresh_icons")
+        row.operator("object.refresh_icons").cmd="(refresh,_)"
     
         # アイコンの辞書からアイコンを取得して表示
         # bpy.context.scene が存在し、かつ custom_icons_path 属性があるかを確認
@@ -193,7 +205,8 @@ class KsynSolidColorCustomIconPanel(bpy.types.Panel):
                 row.operator("object.create_texture",
                              text = f'{index} {bpy.context.scene.custom_icons_path[key]}' if texture_prop.look_path else "", 
                 icon_value=bpy.context.scene.custom_icons["main"][key].icon_id).cmd = key
-                row.operator("object.refresh_icons",icon="").cmd = bpy.context.scene.custom_icons_path[key]
+                if texture_prop.look_path:
+                    row.operator("object.refresh_icons",icon="FILEBROWSER",text="").cmd = f"(fol_open,{bpy.context.scene.custom_icons_path[key]})"
         else:
             pass
 
@@ -209,6 +222,7 @@ class KSYN_TextureProperties(bpy.types.PropertyGroup):
     look_path:bpy.props.BoolProperty(name="look path",default=False) # type: ignore
     use_same_rgb_mat:bpy.props.BoolProperty(name=get_translang("Use the same color material if available.","同じ色のマテリアルがあればそれを使用する"),default=True) # type: ignore
     useobjectname:bpy.props.BoolProperty(name=get_translang("Use the name of the active object as the material","アクティブなオブジェクト名をマテリアルに使う"),default=False) # type: ignore
+    input_node_alpha:bpy.props.BoolProperty(name=get_translang("Connecting an image to an alpha node","画像をアルファノードにつなぐ"),default=False) # type: ignore
     
 class KSYN_TexturePanel(bpy.types.Panel):
     bl_label = "Solid Color Material"
@@ -225,6 +239,7 @@ class KSYN_TexturePanel(bpy.types.Panel):
         # Colorを表示
         layout.prop(texture_prop, "use_same_rgb_mat")
         layout.prop(texture_prop, "useobjectname")
+        layout.prop(texture_prop, "input_node_alpha")
         layout.prop(texture_prop, "color")
         layout.operator("object.create_texture").cmd = "new_mat"
 
@@ -332,7 +347,7 @@ class KSYN_CreateTextureOperator(bpy.types.Operator):
       
             addmat=bpy.data.materials.get(self.cmd)
             if addmat==None:
-                print("###Create a material for a color texture for which no material exists.")
+                # マテリアルが存在しないカラーテクスチャのマテリアルを作成します。
                 addmat = bpy.data.materials.new(name=self.material_name)
                 self.add_material(addmat, use_imagepath=True,image_name=self.cmd)
                 pass
@@ -361,7 +376,7 @@ class KSYN_CreateTextureOperator(bpy.types.Operator):
 
         # イメージパスを使わない場合
         if not use_imagepath:
-            self.image_node.image = bpy.data.images.new(name = self.texturename, width=1, height=1)
+            self.image_node.image = bpy.data.images.new(name = self.texturename, width=1, height=1, alpha=True)
             self.image_node.image.pixels[:] = self.pixels
 
         # イメージパスを使う場合
@@ -370,10 +385,22 @@ class KSYN_CreateTextureOperator(bpy.types.Operator):
 
             self.image_node.image= image
 
+        self.links_nodes(links, principled_node)
+        self.chnage_method(addmat)
+
+    def links_nodes(self,links, principled_node):
+        texture_prop = bpy.context.scene.ksyn_solid_texture_prop
 
         # テクスチャとプリンシプルBSDFノードを接続
         if not any(link.to_node == principled_node for link in self.image_node.outputs[0].links):
             links.new(self.image_node.outputs[0], principled_node.inputs[0])
+            if texture_prop.input_node_alpha:
+                links.new(self.image_node.outputs[0], principled_node.inputs['Alpha'])
+
+    def chnage_method(self, addmat):
+        
+        addmat.blend_method='HASHED'
+        addmat.shadow_method='HASHED'
 
     def save_tex(self):
         # テクスチャを保存
@@ -393,39 +420,32 @@ class KSYN_CreateTextureOperator(bpy.types.Operator):
 
     def invoke(self, context, event):
         # ファイルのパスを取得
-        filepath = bpy.data.filepath
-        directory = os.path.dirname(filepath)
         texture_prop = bpy.context.scene.ksyn_solid_texture_prop
-        addon_prefs = bpy.context.preferences.addons[__name__].preferences
-  
+
         red = texture_prop.color[0]
         green = texture_prop.color[1]
         blue = texture_prop.color[2]
         alpha = texture_prop.color[3]
         piccoloer_str = "_{:.2f}_{:.2f}_{:.2f}_{:.2f}".format(red, green, blue, alpha)
-
-        # if addon_prefs.move_file_location:
-        #     self.texture_dir=addon_prefs.filepath
-        # else:
-        #     self.texture_dir = os.path.join(directory, "Texture")
-        self.texture_dir = RegisterIcons.make_filepath()
         self.pixels = [red, green, blue, alpha]
-
+        # 新しい色のテクスチャを作成
         if self.cmd=="new_mat":
-            # 色番号の手前に付ける名前
+            # prifixである色番号の手前に付ける名前
             if not texture_prop.useobjectname:
                 mat_option_name="ColorMaterial"
+            #　オブジェクトネームをprifixに使う
             else:
                 mat_option_name=bpy.context.object.name
             material_name = f"{mat_option_name}" + piccoloer_str 
             self.material_name = material_name
             self.texturename = material_name
-
         # この場合はフォルダに入っるテクスチャ名が使用される
         else:
             self.material_name = self.cmd 
             self.texturename = self.cmd 
 
+        # ファイルの保存先の分岐※クラスメソッド
+        self.texture_dir = RegisterIcons.make_filepath()
 
         return self.execute(context)
 
@@ -459,7 +479,6 @@ def unregister():
     # unregister_icons()
     bpy.utils.unregister_class(KsynSolidColorCustomIconPanel)
     bpy.utils.unregister_class(KsynSolidColorOBJECT_OT_RefreshIcons)
-
 
 if __name__ == "__main__":
     register()
