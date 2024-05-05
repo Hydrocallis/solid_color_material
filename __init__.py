@@ -46,6 +46,11 @@ class KSYNSolidColorMataddonPreferences(AddonPreferences):
 
     bl_idname = __package__
 
+    file_save_folder_name: StringProperty(
+        name=get_translang("Name of the folder to be created when not specified.","指定してない時に作成されるフォルダの名前"),
+        default="Texture",
+        # subtype='FILE_PATH',
+    )# type: ignore
     filepath: StringProperty(
         name=get_translang("File location","ファイルの場所"),
         subtype='FILE_PATH',
@@ -55,12 +60,14 @@ class KSYNSolidColorMataddonPreferences(AddonPreferences):
         default=False,
     )# type: ignore
 
-
     def draw(self, context):
         layout = self.layout
         addon_prefs = bpy.context.preferences.addons[__name__].preferences
         layout.prop(addon_prefs, "move_file_location")
-        layout.prop(addon_prefs, "filepath", )
+        if addon_prefs.move_file_location:
+            layout.prop(addon_prefs, "filepath", )
+        elif not addon_prefs.move_file_location:
+            layout.prop(addon_prefs, "file_save_folder_name")
 
 class KSYNSCM_OpenAddonPreferences(bpy.types.Operator):
     bl_idname = "ksynscm.open_addonpreferences"
@@ -79,9 +86,15 @@ class KSYNSCM_OpenAddonPreferences(bpy.types.Operator):
         bpy.ops.preferences.addon_show(module = __package__)
 
         return {'FINISHED'}
-# アイコンの辞書を作成
 # アイコン呼び出しクラス
 class RegisterIcons():
+    # アイコンフォルダがなかったら作る つまり、事前チェックなのだ   
+    @classmethod
+    def create_folder_if_none(cls ,texture_dir):
+        # テクスチャを保存
+        if not os.path.exists(texture_dir):
+            os.makedirs(texture_dir)
+
     @classmethod
     def make_filepath(cls):
         datapath=os.path.dirname(bpy.data.filepath)
@@ -90,12 +103,14 @@ class RegisterIcons():
         if addon_prefs.move_file_location:
             icon_dir=addon_prefs.filepath
         else:
-             icon_dir = os.path.join(datapath, "Texture")
+             icon_dir = os.path.join(datapath, addon_prefs.file_save_folder_name)
         return icon_dir
     
     # アイコンの辞書を作成する関数
     def create_icon_dictionary(self, icon_folder):
         icons = {}
+        self.create_folder_if_none(icon_folder)
+
         for filename in os.listdir(icon_folder):
             if filename.endswith(".png"):  # pngファイルのみを対象にする
                 icon_name = os.path.splitext(filename)[0]  # 拡張子を除いたファイル名を取得
@@ -106,7 +121,6 @@ class RegisterIcons():
     # プレビューコレクションを登録する関数
     def register_icons(self):
         icon_dir=self.make_filepath()
-
         icon_dictionary = self.create_icon_dictionary(icon_dir)
         import bpy.utils.previews
         pcoll = bpy.utils.previews.new()
@@ -403,9 +417,7 @@ class KSYN_CreateTextureOperator(bpy.types.Operator):
         addmat.shadow_method='HASHED'
 
     def save_tex(self):
-        # テクスチャを保存
-        if not os.path.exists(self.texture_dir):
-            os.makedirs(self.texture_dir)
+        RegisterIcons.create_folder_if_none(self.texture_dir)
         texture_name = self.texturename
         texture_path = os.path.join(self.texture_dir, texture_name + ".png")
         self.image_node.image.file_format = 'PNG'
